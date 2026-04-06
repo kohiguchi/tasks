@@ -1,0 +1,36 @@
+name: Daily Info Collection
+
+on:
+  schedule:
+    - cron: '0 22 * * *'  # 毎日 7:00 AM JST
+  workflow_dispatch:  # 手動実行も可能
+
+jobs:
+  collect:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install anthropic requests beautifulsoup4
+
+      - name: Run collection script
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          NOTION_TOKEN: ${{ secrets.NOTION_TOKEN }}
+        run: python scripts/collect_info.py
+
+      - name: Commit processed URLs
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add data/processed_urls.txt
+          git diff --staged --quiet || git commit -m "Update processed URLs [skip ci]"
+          git push

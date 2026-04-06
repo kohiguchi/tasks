@@ -2,7 +2,7 @@ name: Daily Info Collection
 
 on:
   schedule:
-    - cron: '0 22 * * *'  # 毎日 7:00 AM JST
+    - cron: '0 23 * * *'  # 毎日 8:00 AM JST
   workflow_dispatch:  # 手動実行も可能
 
 jobs:

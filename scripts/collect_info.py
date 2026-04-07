@@ -13,7 +13,7 @@ CATEGORY_DB_IDS = {
     "SEO":    "33b8d71fe58081bb938bcdcd8638f446",
     "AI":     "33b8d71fe580812898ccdaff27a9caaf",
     "世界情勢": "33b8d71fe580810fb827f1208538b12c",
-    "政治":   "33b8d71fe580810387810e339bc82c769",
+    "政治":   "33b8d71fe58081038781e339bc82c769",
 }
 
 client = Anthropic()
@@ -54,7 +54,7 @@ URL: {url}
 {content}
 
 以下のJSON形式のみで返してください（マークダウン不要）:
-{{"title": "タイトル（30文字以内）", "summary": "要約（300文字程度）", "points": ["ポイント1", "ポイント2", "ポイント3"]}}"""
+{{"title": "タイトル（30文字以内）", "oneliner": "この記事のひとこと（50文字以内）", "summary": "要約（300文字程度）", "points": ["ポイント1", "ポイント2", "ポイント3"]}}"""
         }]
     )
     raw = response.content[0].text.strip()
@@ -62,7 +62,7 @@ URL: {url}
     return json.loads(raw)
 
 
-def create_notion_page(title, summary, points, url, category, date_str):
+def create_notion_page(title, oneliner, summary, points, url, category, date_str):
     """DBエントリとして記事を作成（日付プロパティ付き）"""
     db_id = CATEGORY_DB_IDS[category]
 
@@ -102,6 +102,7 @@ def create_notion_page(title, summary, points, url, category, date_str):
         "properties": {
             "名前": {"title": [{"text": {"content": f"{date_str} {title}"}}]},
             "日付": {"date": {"start": iso_date}},
+            "ひとこと": {"rich_text": [{"text": {"content": oneliner}}]},
         },
         "children": children,
     }
@@ -180,6 +181,7 @@ def main():
             result = summarize(url, content, category)
             create_notion_page(
                 result["title"],
+                result.get("oneliner", ""),
                 result["summary"],
                 result["points"],
                 url,

@@ -9,9 +9,60 @@ from bs4 import BeautifulSoup
 NOTION_TOKEN = os.environ["NOTION_TOKEN"]
 NOTION_PAGE_ID = "3358d71fe58080989efdee01e5aaffd6"
 
-client = Anthropic()
+CATEGORY_PAGES = {
+    "SEO":    {"emoji": "📈", "page_id": None},
+    "AI":     {"emoji": "🤖", "page_id": None},
+    "世界情勢": {"emoji": "🌍", "page_id": None},
+    "政治":   {"emoji": "🏛️", "page_id": None},
+}
 
+client = Anthropic()
 JST = timezone(timedelta(hours=9))
+
+
+def notion_headers():
+    return {
+        "Authorization": f"Bearer {NOTION_TOKEN}",
+        "Content-Type": "application/json",
+        "Notion-Version": "2022-06-28",
+    }
+
+
+def get_or_create_category_pages():
+    """親ページの子ページを検索し、カテゴリページのIDを取得または作成する"""
+    # 既存の子ブロックを取得
+    resp = requests.get(
+        f"https://api.notion.com/v1/blocks/{NOTION_PAGE_ID}/children?page_size=100",
+        headers=notion_headers(),
+    )
+    resp.raise_for_status()
+    blocks = resp.json().get("results", [])
+
+    # 既存のchild_pageを名前でマッピング
+    existing = {}
+    for block in blocks:
+        if block["type"] == "child_page":
+            title = block["child_page"]["title"]
+            existing[title] = block["id"]
+
+    for key, info in CATEGORY_PAGES.items():
+        page_title = f"{info['emoji']} {key}"
+        if page_title in existing:
+            CATEGORY_PAGES[key]["page_id"] = existing[page_title]
+            print(f"[FOUND] カテゴリページ: {page_title} ({existing[page_title]})")
+        else:
+            # 新規作成
+            data = {
+                "parent": {"page_id": NOTION_PAGE_ID},
+                "properties": {
+                    "title": {"title": [{"text": {"content": page_title}}]}
+                },
+            }
+            r = requests.post("https://api.notion.com/v1/pages", headers=notion_headers(), json=data)
+            r.raise_for_status()
+            page_id = r.json()["id"]
+            CATEGORY_PAGES[key]["page_id"] = page_id
+            print(f"[CREATED] カテゴリページ: {page_title} ({page_id})")
 
 
 def fetch_article(url):
@@ -44,17 +95,12 @@ URL: {url}
         }]
     )
     raw = response.content[0].text.strip()
-    # コードブロックがあれば除去
     raw = re.sub(r"```(?:json)?\s*|\s*```", "", raw).strip()
     return json.loads(raw)
 
 
 def create_notion_page(title, summary, points, url, category, date):
-    headers = {
-        "Authorization": f"Bearer {NOTION_TOKEN}",
-        "Content-Type": "application/json",
-        "Notion-Version": "2022-06-28",
-    }
+    parent_id = CATEGORY_PAGES[category]["page_id"]
 
     children = [
         {
@@ -85,16 +131,16 @@ def create_notion_page(title, summary, points, url, category, date):
     })
 
     data = {
-        "parent": {"page_id": NOTION_PAGE_ID},
+        "parent": {"page_id": parent_id},
         "properties": {
             "title": {
-                "title": [{"text": {"content": f"【{category}・{date}】{title}"}}]
+                "title": [{"text": {"content": f"{date} {title}"}}]
             }
         },
         "children": children,
     }
 
-    resp = requests.post("https://api.notion.com/v1/pages", headers=headers, json=data)
+    resp = requests.post("https://api.notion.com/v1/pages", headers=notion_headers(), json=data)
     resp.raise_for_status()
     return resp.json()
 
@@ -118,6 +164,8 @@ def parse_articles(md_path):
     category_keywords = {
         "SEO": "SEO",
         "AI": "AI",
+        "世界情勢": "世界情勢",
+        "政治": "政治",
         "営業": "営業",
         "組織運営": "組織運営",
         "IT": "IT",
@@ -146,24 +194,34 @@ def parse_articles(md_path):
 def main():
     today = datetime.now(JST).strftime("%Y/%m/%d")
     processed = load_processed_urls()
+
+    get_or_create_category_pages()
+
     articles = parse_articles("data/articles.md")
 
     for article in articles:
         url = article["url"]
+        category = article["category"]
+
         if url in processed:
             print(f"[SKIP] {url}")
+            continue
+
+        # カテゴリページが未定義のものはスキップ
+        if category not in CATEGORY_PAGES:
+            print(f"[SKIP] カテゴリ未対応: {category}")
             continue
 
         print(f"[START] {url}")
         try:
             content = fetch_article(url)
-            result = summarize(url, content, article["category"])
+            result = summarize(url, content, category)
             create_notion_page(
                 result["title"],
                 result["summary"],
                 result["points"],
                 url,
-                article["category"],
+                category,
                 today,
             )
             save_processed_url(url)

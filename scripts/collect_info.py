@@ -7,13 +7,13 @@ from anthropic import Anthropic
 from bs4 import BeautifulSoup
 
 NOTION_TOKEN = os.environ["NOTION_TOKEN"]
-NOTION_PAGE_ID = "3358d71fe58080989efdee01e5aaffd6"
 
-CATEGORY_PAGES = {
-    "SEO":    {"emoji": "📈", "page_id": None},
-    "AI":     {"emoji": "🤖", "page_id": None},
-    "世界情勢": {"emoji": "🌍", "page_id": None},
-    "政治":   {"emoji": "🏛️", "page_id": None},
+# カテゴリごとのNotionデータベースID（日付降順で最新が上に表示）
+CATEGORY_DB_IDS = {
+    "SEO":    "33b8d71fe58081bb938bcdcd8638f446",
+    "AI":     "33b8d71fe580812898ccdaff27a9caaf",
+    "世界情勢": "33b8d71fe580810fb827f1208538b12c",
+    "政治":   "33b8d71fe580810387810e339bc82c769",
 }
 
 client = Anthropic()
@@ -26,43 +26,6 @@ def notion_headers():
         "Content-Type": "application/json",
         "Notion-Version": "2022-06-28",
     }
-
-
-def get_or_create_category_pages():
-    """親ページの子ページを検索し、カテゴリページのIDを取得または作成する"""
-    # 既存の子ブロックを取得
-    resp = requests.get(
-        f"https://api.notion.com/v1/blocks/{NOTION_PAGE_ID}/children?page_size=100",
-        headers=notion_headers(),
-    )
-    resp.raise_for_status()
-    blocks = resp.json().get("results", [])
-
-    # 既存のchild_pageを名前でマッピング
-    existing = {}
-    for block in blocks:
-        if block["type"] == "child_page":
-            title = block["child_page"]["title"]
-            existing[title] = block["id"]
-
-    for key, info in CATEGORY_PAGES.items():
-        page_title = f"{info['emoji']} {key}"
-        if page_title in existing:
-            CATEGORY_PAGES[key]["page_id"] = existing[page_title]
-            print(f"[FOUND] カテゴリページ: {page_title} ({existing[page_title]})")
-        else:
-            # 新規作成
-            data = {
-                "parent": {"page_id": NOTION_PAGE_ID},
-                "properties": {
-                    "title": {"title": [{"text": {"content": page_title}}]}
-                },
-            }
-            r = requests.post("https://api.notion.com/v1/pages", headers=notion_headers(), json=data)
-            r.raise_for_status()
-            page_id = r.json()["id"]
-            CATEGORY_PAGES[key]["page_id"] = page_id
-            print(f"[CREATED] カテゴリページ: {page_title} ({page_id})")
 
 
 def fetch_article(url):
@@ -99,8 +62,9 @@ URL: {url}
     return json.loads(raw)
 
 
-def create_notion_page(title, summary, points, url, category, date):
-    parent_id = CATEGORY_PAGES[category]["page_id"]
+def create_notion_page(title, summary, points, url, category, date_str):
+    """DBエントリとして記事を作成（日付プロパティ付き）"""
+    db_id = CATEGORY_DB_IDS[category]
 
     children = [
         {
@@ -130,12 +94,14 @@ def create_notion_page(title, summary, points, url, category, date):
         },
     })
 
+    # date_str は "YYYY/MM/DD" 形式 → "YYYY-MM-DD" に変換
+    iso_date = date_str.replace("/", "-")
+
     data = {
-        "parent": {"page_id": parent_id},
+        "parent": {"database_id": db_id},
         "properties": {
-            "title": {
-                "title": [{"text": {"content": f"{date} {title}"}}]
-            }
+            "名前": {"title": [{"text": {"content": f"{date_str} {title}"}}]},
+            "日付": {"date": {"start": iso_date}},
         },
         "children": children,
     }
@@ -194,9 +160,6 @@ def parse_articles(md_path):
 def main():
     today = datetime.now(JST).strftime("%Y/%m/%d")
     processed = load_processed_urls()
-
-    get_or_create_category_pages()
-
     articles = parse_articles("data/articles.md")
 
     for article in articles:
@@ -207,8 +170,7 @@ def main():
             print(f"[SKIP] {url}")
             continue
 
-        # カテゴリページが未定義のものはスキップ
-        if category not in CATEGORY_PAGES:
+        if category not in CATEGORY_DB_IDS:
             print(f"[SKIP] カテゴリ未対応: {category}")
             continue
 

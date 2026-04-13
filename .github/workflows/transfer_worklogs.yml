@@ -2,7 +2,7 @@ name: 完了タスク作業ログ自動転記
 
 on:
   schedule:
-    - cron: '0 * * * *'   # 毎時0分に実行（JST = UTC+9）
+    - cron: '*/5 * * * *'  # 5分ごとに実行
   workflow_dispatch:        # 手動実行も可能
 
 jobs:

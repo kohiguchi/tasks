@@ -1,0 +1,127 @@
+name: 完了タスク作業ログ自動転記
+
+on:
+  schedule:
+    - cron: '0 * * * *'   # 毎時0分に実行（JST = UTC+9）
+  workflow_dispatch:        # 手動実行も可能
+
+jobs:
+  transfer:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 完了タスクを作業ログDBへ転記
+        env:
+          NOTION_TOKEN: ${{ secrets.NOTION_TOKEN }}
+        run: |
+          set -e
+
+          TASK_DB_ID="4af284d6b79a497592c45a43aedb994e"
+
+          declare -A ENGINEER_DB
+          ENGINEER_DB["須田"]="177b381264e04fcfa95ae5b5e1f6124e"
+          ENGINEER_DB["多々"]="b67a4f07229749fdb54cef3be7ed6169"
+          ENGINEER_DB["阪口"]="970809a9d27c4bcd8f407987bd243fe3"
+          ENGINEER_DB["山本"]="90bb4dffe28a4282ba45f7d4ffaea38b"
+          ENGINEER_DB["金城"]="f65410c9e45440718d4d68054bced00b"
+
+          # 転記対象タスクを取得（完了 & 転記済み=false & 作業時間_分 入力済み）
+          RESPONSE=$(curl -s -X POST \
+            "https://api.notion.com/v1/databases/${TASK_DB_ID}/query" \
+            -H "Authorization: Bearer ${NOTION_TOKEN}" \
+            -H "Notion-Version: 2022-06-28" \
+            -H "Content-Type: application/json" \
+            -d '{
+              "filter": {
+                "and": [
+                  {"property": "ステータス",  "select":   {"equals": "完了"}},
+                  {"property": "転記済み",    "checkbox": {"equals": false}},
+                  {"property": "作業時間_分", "number":   {"is_not_empty": true}}
+                ]
+              }
+            }')
+
+          TASK_COUNT=$(echo "$RESPONSE" | python3 -c "import json,sys; d=json.load(sys.stdin); print(len(d.get('results', [])))")
+          echo "転記対象: ${TASK_COUNT} 件"
+
+          if [ "$TASK_COUNT" -eq 0 ]; then
+            echo "転記対象なし。終了。"
+            exit 0
+          fi
+
+          # 各タスクを処理
+          echo "$RESPONSE" | python3 - <<'PYEOF'
+          import json, sys, subprocess, os
+
+          token = os.environ["NOTION_TOKEN"]
+          headers_json = json.dumps({
+              "Authorization": f"Bearer {token}",
+              "Notion-Version": "2022-06-28",
+              "Content-Type": "application/json",
+          })
+
+          ENGINEER_DB = {
+              "須田": "177b381264e04fcfa95ae5b5e1f6124e",
+              "多々": "b67a4f07229749fdb54cef3be7ed6169",
+              "阪口": "970809a9d27c4bcd8f407987bd243fe3",
+              "山本": "90bb4dffe28a4282ba45f7d4ffaea38b",
+              "金城": "f65410c9e45440718d4d68054bced00b",
+          }
+
+          def notion_request(method, url, body=None):
+              cmd = [
+                  "curl", "-s", f"-X{method}", url,
+                  "-H", f"Authorization: Bearer {token}",
+                  "-H", "Notion-Version: 2022-06-28",
+                  "-H", "Content-Type: application/json",
+              ]
+              if body:
+                  cmd += ["-d", json.dumps(body)]
+              result = subprocess.run(cmd, capture_output=True, text=True)
+              return json.loads(result.stdout)
+
+          data = json.load(sys.stdin)
+          tasks = data.get("results", [])
+          success = 0
+
+          for task in tasks:
+              props    = task["properties"]
+              engineer = (props.get("担当エンジニア") or {}).get("select", {})
+              engineer = engineer.get("name") if engineer else None
+              db_id    = ENGINEER_DB.get(engineer)
+
+              if not db_id:
+                  print(f"  SKIP: 担当エンジニア未設定 [{task['id']}]")
+                  continue
+
+              task_name    = (props.get("タスク名", {}).get("title") or [{}])[0].get("plain_text", "（なし）")
+              client_sel   = (props.get("クライアント") or {}).get("select")
+              client       = client_sel["name"] if client_sel else None
+              work_minutes = (props.get("作業時間_分") or {}).get("number")
+              date_obj     = (props.get("期日") or {}).get("date")
+              work_date    = date_obj["start"] if date_obj else task["last_edited_time"][:10]
+
+              # 作業ログDB にページ作成
+              page_props = {
+                  "作業メモ":    {"title": [{"text": {"content": task_name}}]},
+                  "作業時間_分": {"number": work_minutes},
+              }
+              if client:
+                  page_props["クライアント"] = {"select": {"name": client}}
+              if work_date:
+                  page_props["作業日"] = {"date": {"start": work_date}}
+
+              res = notion_request("POST", "https://api.notion.com/v1/pages",
+                                   {"parent": {"database_id": db_id}, "properties": page_props})
+              if "id" not in res:
+                  print(f"  ERROR: 作業ログ作成失敗 [{task['id']}]: {res}")
+                  continue
+
+              # 転記済み = true に更新
+              notion_request("PATCH", f"https://api.notion.com/v1/pages/{task['id']}",
+                             {"properties": {"転記済み": {"checkbox": True}}})
+
+              print(f"  OK: [{engineer}] {task_name}")
+              success += 1
+
+          print(f"転記完了: {success}/{len(tasks)} 件")
+          PYEOF
